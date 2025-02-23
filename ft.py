@@ -10,6 +10,7 @@ from transformers.trainer_utils import get_last_checkpoint
 def main():
 
     os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+    os.environ["USE_LIBUV"] = "0"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f'Device: {device}')
@@ -17,14 +18,16 @@ def main():
     print(torch.cuda.is_available())  # Должно вернуть True
     print(torch.version.cuda)
 
-    model_name = "ifable/gemma-2-Ifable-9B"  # или другая модель
+    #model_name = "ifable/gemma-2-Ifable-9B"  # или другая модель
+    model_name = "internlm/OREAL-DeepSeek-R1-Distill-Qwen-7B"  # или другая модель
     cache_dir = "E:\\ai\\ft\\cache"
 
     print('Quantization')
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.float16
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_quant_type="nf4",
     )
 
     device_map = "cuda:0"
@@ -38,7 +41,7 @@ def main():
         quantization_config=quantization_config,
         device_map=device_map,  # Распределение модели
         attn_implementation="eager",  # Используем eager attention
-        use_cache=False
+        use_cache=False,
         )
     print(f'Tokenizer: {model_name}')
     tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
@@ -46,22 +49,23 @@ def main():
     # Настройка LoRA
     print('LoRA')
     lora_config = LoraConfig(
-        r=8,
+        r=32,
         lora_alpha=32,
         target_modules=["q_proj", "v_proj"],
         lora_dropout=0.1,
-        bias="none",
-        task_type="CAUSAL_LM"
+        bias="all",
+        task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, lora_config)
 
     def tokenize_function(examples):
-        return tokenizer(examples["text"], truncation=True, padding=True, max_length=512)
+        return tokenizer(examples["text"], truncation=True, padding=True, max_length=256)
 
     print('Load dataset')
     dataset = load_dataset("text", data_files={"train": "d:\\ai\\learn\\ft\\*.*"})
     print('Tokenize dataset')
     tokenized_datasets = dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+    tokenized_datasets = tokenized_datasets.filter(lambda x: len(x["input_ids"]) > 32)
 
     # Добавление labels
     def add_labels(examples):
@@ -83,11 +87,21 @@ def main():
         logging_dir="./logs",
         logging_steps=10,  # Логировать каждые 100 шагов
         prediction_loss_only=False,
-        fp16=True,
+        fp16=False,
         report_to="tensorboard",
         dataloader_num_workers=4,
         learning_rate=5e-5,
-        weight_decay=0.01
+        weight_decay=0.01,
+        deepspeed=None,
+        lr_scheduler_type="cosine",
+        warmup_steps=500,
+        save_strategy="steps",
+        load_best_model_at_end=False
+
+        ,
+        eval_strategy="no",
+        optim="adamw_torch",
+        label_names=["labels"],
     )
 
     print('Data collator')
@@ -137,7 +151,7 @@ def main():
     print('Generating text')
     generator = pipeline("text-generation", model="./fine_tuned_model")
     print(generator(
-        "Once upon a time, in a far away land, there lived a one boy. ",
+        "Once upon a time, in a far away land, there lived a one man. ",
         max_length=500,
         temperature=0.7,
         top_k=50,
