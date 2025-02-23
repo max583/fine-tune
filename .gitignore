@@ -1,0 +1,7 @@
+results/
+research/
+logs/
+cache/
+*.log
+.idea/
+test.py
